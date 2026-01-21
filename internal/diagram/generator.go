@@ -12,17 +12,21 @@ import (
 
 // ColorScheme defines colors for different component types.
 var ColorScheme = map[analyzer.ComponentType]string{
-	analyzer.ComponentHandler:    "#4A90D9", // Blue
-	analyzer.ComponentService:    "#50C878", // Green
-	analyzer.ComponentRepository: "#FFB347", // Orange
-	analyzer.ComponentModel:      "#DDA0DD", // Plum
-	analyzer.ComponentMiddleware: "#87CEEB", // Sky Blue
-	analyzer.ComponentConfig:     "#D3D3D3", // Light Gray
-	analyzer.ComponentUnknown:    "#FFFFFF", // White
+	analyzer.ComponentHandler:    "#4A90D9", // Blue - HTTP/Transport layer
+	analyzer.ComponentService:    "#50C878", // Green - Business logic
+	analyzer.ComponentRepository: "#FFB347", // Orange - Data access
+	analyzer.ComponentAdapter:    "#9B59B6", // Purple - External integrations
+}
+
+// LayerLabels maps component types to display labels.
+var LayerLabels = map[analyzer.ComponentType]string{
+	analyzer.ComponentHandler:    "Transport Layer",
+	analyzer.ComponentService:    "Service Layer",
+	analyzer.ComponentRepository: "Data Layer",
+	analyzer.ComponentAdapter:    "Adapters",
 }
 
 // Generate creates a diagram from the architecture and saves it to the output path.
-// Supports .svg, .png output formats based on the file extension.
 func Generate(arch *analyzer.Architecture, outputPath string) error {
 	ctx := context.Background()
 
@@ -32,67 +36,24 @@ func Generate(arch *analyzer.Architecture, outputPath string) error {
 	}
 	defer g.Close()
 
-	graph, err := g.Graph()
+	dotString := GenerateDOT(arch)
+
+	graph, err := graphviz.ParseBytes([]byte(dotString))
 	if err != nil {
-		return fmt.Errorf("failed to create graph: %w", err)
+		return fmt.Errorf("failed to parse DOT: %w", err)
 	}
 	defer graph.Close()
 
-	// Set graph attributes
-	graph.SetRankDir("TB")
-	graph.SetLabel("Service Architecture")
-
-	// Create nodes for each component
-	nodes := make(map[string]*graphviz.Node)
-	for _, comp := range arch.Components {
-		node, err := graph.CreateNodeByName(sanitizeName(comp.Name))
-		if err != nil {
-			continue
-		}
-
-		node.SetShape("box")
-		node.SetStyle("filled")
-		node.SetFillColor(ColorScheme[comp.Type])
-		node.SetLabel(formatLabel(comp))
-
-		nodes[comp.Name] = node
-	}
-
-	// Create edges for dependencies
-	for _, comp := range arch.Components {
-		srcNode, ok := nodes[comp.Name]
-		if !ok {
-			continue
-		}
-
-		for _, dep := range comp.Dependencies {
-			dstNode, ok := nodes[dep]
-			if !ok {
-				continue
-			}
-
-			edgeName := fmt.Sprintf("%s_%s", sanitizeName(comp.Name), sanitizeName(dep))
-			edge, err := graph.CreateEdgeByName(edgeName, srcNode, dstNode)
-			if err != nil {
-				continue
-			}
-			edge.SetColor("#666666")
-		}
-	}
-
-	// Determine format from output path
 	format := graphviz.PNG
 	if strings.HasSuffix(outputPath, ".svg") {
 		format = graphviz.SVG
 	}
 
-	// Render to buffer
 	var buf bytes.Buffer
 	if err := g.Render(ctx, graph, format, &buf); err != nil {
 		return fmt.Errorf("failed to render graph: %w", err)
 	}
 
-	// Write to file
 	if err := writeFileBytes(outputPath, buf.Bytes()); err != nil {
 		return fmt.Errorf("failed to write output: %w", err)
 	}
@@ -100,7 +61,7 @@ func Generate(arch *analyzer.Architecture, outputPath string) error {
 	return nil
 }
 
-// GenerateDOT creates a DOT representation of the architecture.
+// GenerateDOT creates a clean, layered DOT representation of the architecture.
 func GenerateDOT(arch *analyzer.Architecture) string {
 	var sb strings.Builder
 
@@ -108,10 +69,16 @@ func GenerateDOT(arch *analyzer.Architecture) string {
 	sb.WriteString("  rankdir=TB;\n")
 	sb.WriteString("  label=\"Service Architecture\";\n")
 	sb.WriteString("  labelloc=t;\n")
-	sb.WriteString("  fontsize=20;\n")
+	sb.WriteString("  fontsize=24;\n")
+	sb.WriteString("  fontname=\"Helvetica-Bold\";\n")
 	sb.WriteString("  pad=0.5;\n")
-	sb.WriteString("  nodesep=0.5;\n")
-	sb.WriteString("  ranksep=1.0;\n\n")
+	sb.WriteString("  nodesep=0.8;\n")
+	sb.WriteString("  ranksep=1.2;\n")
+	sb.WriteString("  splines=polyline;\n\n")
+
+	// Default node style - bigger, more readable
+	sb.WriteString("  node [fontname=\"Helvetica\", fontsize=14, margin=\"0.3,0.2\", penwidth=2];\n")
+	sb.WriteString("  edge [fontname=\"Helvetica\", fontsize=10, penwidth=2, color=\"#555555\"];\n\n")
 
 	// Group components by type
 	groups := make(map[analyzer.ComponentType][]analyzer.Component)
@@ -119,40 +86,54 @@ func GenerateDOT(arch *analyzer.Architecture) string {
 		groups[comp.Type] = append(groups[comp.Type], comp)
 	}
 
-	// Create subgraphs
-	subgraphLabels := map[analyzer.ComponentType]string{
-		analyzer.ComponentHandler:    "Handlers",
-		analyzer.ComponentService:    "Services",
-		analyzer.ComponentRepository: "Repositories",
-		analyzer.ComponentModel:      "Models",
-		analyzer.ComponentMiddleware: "Middleware",
-		analyzer.ComponentConfig:     "Config",
+	// Layer order: top to bottom
+	layerOrder := []analyzer.ComponentType{
+		analyzer.ComponentHandler,
+		analyzer.ComponentService,
+		analyzer.ComponentAdapter,
+		analyzer.ComponentRepository,
 	}
 
-	for compType, label := range subgraphLabels {
+	// Create layered subgraphs
+	for _, compType := range layerOrder {
 		components, ok := groups[compType]
 		if !ok || len(components) == 0 {
 			continue
 		}
 
+		label := LayerLabels[compType]
+		color := ColorScheme[compType]
+
 		sb.WriteString(fmt.Sprintf("  subgraph cluster_%s {\n", compType))
 		sb.WriteString(fmt.Sprintf("    label=\"%s\";\n", label))
-		sb.WriteString("    style=rounded;\n")
-		sb.WriteString("    bgcolor=\"#F5F5F5\";\n\n")
+		sb.WriteString("    style=\"rounded,filled\";\n")
+		sb.WriteString("    fillcolor=\"#FAFAFA\";\n")
+		sb.WriteString("    color=\"#CCCCCC\";\n")
+		sb.WriteString("    fontsize=16;\n")
+		sb.WriteString("    fontname=\"Helvetica-Bold\";\n")
+		sb.WriteString("    margin=20;\n\n")
 
 		for _, comp := range components {
-			sb.WriteString(fmt.Sprintf("    %s [shape=box, style=filled, fillcolor=\"%s\", label=\"%s\\n(%s)\"];\n",
-				sanitizeName(comp.Name), ColorScheme[compType], comp.Name, comp.Package))
+			nodeName := sanitizeName(comp.Name)
+			// Show package in label for context
+			nodeLabel := comp.Name
+			if comp.Package != "" && comp.Package != comp.Name {
+				nodeLabel = fmt.Sprintf("%s\\n(%s)", comp.Name, comp.Package)
+			}
+			sb.WriteString(fmt.Sprintf("    %s [shape=box, style=\"rounded,filled\", fillcolor=\"%s\", label=\"%s\", fontcolor=\"white\"];\n",
+				nodeName, color, nodeLabel))
 		}
 
 		sb.WriteString("  }\n\n")
 	}
 
-	// Create edges
+	// Create edges for dependencies
+	sb.WriteString("  // Dependencies\n")
 	for _, comp := range arch.Components {
+		srcName := sanitizeName(comp.Name)
 		for _, dep := range comp.Dependencies {
-			sb.WriteString(fmt.Sprintf("  %s -> %s [color=\"#666666\"];\n",
-				sanitizeName(comp.Name), sanitizeName(dep)))
+			dstName := sanitizeName(dep)
+			sb.WriteString(fmt.Sprintf("  %s -> %s;\n", srcName, dstName))
 		}
 	}
 
@@ -161,10 +142,8 @@ func GenerateDOT(arch *analyzer.Architecture) string {
 	return sb.String()
 }
 
-func formatLabel(comp analyzer.Component) string {
-	return fmt.Sprintf("%s\n(%s)", comp.Name, comp.Package)
-}
-
 func sanitizeName(name string) string {
-	return strings.ReplaceAll(name, "-", "_")
+	s := strings.ReplaceAll(name, "-", "_")
+	s = strings.ReplaceAll(s, ".", "_")
+	return s
 }

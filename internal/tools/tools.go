@@ -90,20 +90,30 @@ func buildSummary(arch *analyzer.Architecture, outputPath string) string {
 
 	summary := fmt.Sprintf("Architecture diagram generated successfully!\n\nOutput: %s\n\nComponents found:\n", outputPath)
 
-	typeLabels := map[analyzer.ComponentType]string{
-		analyzer.ComponentHandler:    "Handlers",
-		analyzer.ComponentService:    "Services",
-		analyzer.ComponentRepository: "Repositories",
-		analyzer.ComponentModel:      "Models",
-		analyzer.ComponentMiddleware: "Middleware",
-		analyzer.ComponentConfig:     "Config",
-		analyzer.ComponentUnknown:    "Other",
+	// List components in layer order
+	typeLabels := []struct {
+		Type  analyzer.ComponentType
+		Label string
+	}{
+		{analyzer.ComponentHandler, "Handlers (Transport)"},
+		{analyzer.ComponentService, "Services (Business Logic)"},
+		{analyzer.ComponentAdapter, "Adapters (External)"},
+		{analyzer.ComponentRepository, "Repositories (Data)"},
 	}
 
-	for compType, label := range typeLabels {
-		if count, ok := counts[compType]; ok && count > 0 {
-			summary += fmt.Sprintf("  - %s: %d\n", label, count)
+	for _, tl := range typeLabels {
+		if count, ok := counts[tl.Type]; ok && count > 0 {
+			summary += fmt.Sprintf("  - %s: %d\n", tl.Label, count)
 		}
+	}
+
+	// List dependency connections
+	depCount := 0
+	for _, deps := range arch.Dependencies {
+		depCount += len(deps)
+	}
+	if depCount > 0 {
+		summary += fmt.Sprintf("\nDependencies: %d connections\n", depCount)
 	}
 
 	return summary
